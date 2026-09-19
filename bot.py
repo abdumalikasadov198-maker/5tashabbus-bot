@@ -19,11 +19,11 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 
-# CAPTCHA yechuvchi kuchaytirilgan funksiya
+# CAPTCHA o'qish funksiyasi
 async def solve_captcha(page) -> str:
     try:
         captcha_elem = page.locator("img[src*='captcha']").first
-        if await captcha_elem.count() > 0:
+        if await captcha_elem.count() > 0 and await captcha_elem.is_visible():
             await captcha_elem.screenshot(path="captcha.png")
             img = Image.open("captcha.png")
             text = pytesseract.image_to_string(img).strip()
@@ -39,7 +39,7 @@ async def start_cmd(message: types.Message):
     await message.answer(
         "👋 **Xush kelibsiz!**\n\n"
         "O'quvchilar Excel (`oquvchilar.xlsx`) faylini yuboring.\n"
-        "Fayl ustunlari: `Guvohnoma_Raqam` (masalan: `AE 4154273`), `Tugilgan_Sana` (`08.06.2009`)."
+        "Ustunlar: `Guvohnoma_Raqam` (masalan: `AE 4154273`), `Tugilgan_Sana` (`08.06.2009`)."
     )
 
 
@@ -71,7 +71,7 @@ async def start_mass_registration(message: types.Message):
     successful_students = []
     failed_students = []
 
-    # Standart rasm yaratish (bo'lmasa)
+    # Standart rasm tayyorlash
     sample_img_path = "sample_avatar.jpg"
     if not os.path.exists(sample_img_path):
         img = Image.new("RGB", (300, 400), color=(200, 200, 200))
@@ -102,9 +102,9 @@ async def start_mass_registration(message: types.Message):
                 seriya, raqam = "", guvohnoma
 
             is_registered = False
-            student_name = "Noma'lum o'quvchi"
+            student_name = ""
+            fail_reason = ""
 
-            # 2 marta qayta urinish imkoniyati
             for attempt in range(2):
                 try:
                     # 1. Bosh sahifa
@@ -117,7 +117,7 @@ async def start_mass_registration(message: types.Message):
                         await reg_btn.click(timeout=10000)
                         await page.wait_for_timeout(1500)
 
-                    # 3. Telefon kiritish (agar so'ralsa)
+                    # 3. Telefon kiritish (agar mavjud bo'lsa)
                     phone_input = page.locator("input[type='tel'], input[placeholder*='998'], input[placeholder*='RAQAM']").first
                     if await phone_input.count() > 0 and await phone_input.is_visible():
                         await phone_input.fill(phone)
@@ -151,15 +151,32 @@ async def start_mass_registration(message: types.Message):
                         await search_btn.click()
                         await page.wait_for_timeout(3000)
 
-                    # 7. O'quvchi ism-familiyasini sahifadan o'qib olish
+                    # --- REAL TEKSHIRUV: Bazada bor-yo'qligini aniqlash ---
+                    not_found = page.locator("text=Topilmadi, text=Ma'lumot topilmadi, text=Mavjud emas, text=Xatolik").first
+                    if await not_found.count() > 0 and await not_found.is_visible():
+                        fail_reason = "Bazada topilmadi"
+                        break
+
+                    # 7. O'quvchi ism-familiyasini o'qish
                     try:
-                        name_elem = page.locator("input[placeholder*='FAMILIYA'], div:has-text('FAMILIYA'), h3, h4").first
-                        if await name_elem.count() > 0:
-                            val = await name_elem.input_value() if await name_elem.evaluate("node => node.tagName === 'INPUT'") else await name_elem.text_content()
-                            if val and len(val.strip()) > 2:
-                                student_name = val.strip()
+                        page_text = await page.inner_text("body")
+                        lines = [line.strip() for line in page_text.split("\n") if line.strip()]
+                        
+                        for i, line in enumerate(lines):
+                            if any(kw in line.upper() for kw in ["FAMILIYA", "ISM", "F.I.SH", "F.I.O"]):
+                                if i + 1 < len(lines):
+                                    student_name = lines[i + 1]
+                                    break
+
+                        if not student_name:
+                            inputs = await page.locator("input").all()
+                            for inp in inputs:
+                                val = await inp.input_value()
+                                if val and len(val.split()) >= 2 and not val.startswith("998"):
+                                    student_name = val
+                                    break
                     except Exception:
-                        pass
+                        student_name = "Ismi o'qilmadi"
 
                     # 8. Rasm yuklash
                     file_input = page.locator("input[type='file']").first
@@ -178,14 +195,17 @@ async def start_mass_registration(message: types.Message):
 
                 except Exception as e:
                     logging.warning(f"Urinish {attempt+1} muvaffaqiyatsiz bo'ldi ({guvohnoma}): {e}")
+                    fail_reason = "Ulanish xatosi"
                     await asyncio.sleep(2)
 
             if is_registered:
-                successful_students.append(f"• {student_name} ({guvohnoma})")
+                display_name = student_name if student_name else "Muvaffaqiyatli o'tdi"
+                successful_students.append(f"• {display_name} ({guvohnoma})")
             else:
-                failed_students.append(f"• {guvohnoma}")
+                reason_str = f" ({fail_reason})" if fail_reason else ""
+                failed_students.append(f"• {guvohnoma}{reason_str}")
 
-            # Telegram'da jonli holatni yangilash
+            # Telegram statusini yangilash
             await status_msg.edit_text(
                 f"🔄 **Jarayon:** [{idx+1}/{total}]\n"
                 f"✅ Muvaffaqiyatli: {len(successful_students)} ta\n"
@@ -206,7 +226,7 @@ async def start_mass_registration(message: types.Message):
         report += "\n".join(successful_students) + "\n\n"
 
     if failed_students:
-        report += "⚠️ **O'tmaganlar (Guvohnoma):**\n"
+        report += "⚠️ **O'tmaganlar:**\n"
         report += "\n".join(failed_students)
 
     await message.answer(report)
@@ -218,4 +238,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-            
+    
