@@ -8,21 +8,28 @@ from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart, Command
 from aiogram.types import FSInputFile
 
-# 1. BOT SOZLAMALARI
+# 1. BOT VA API SOZLAMALARI
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8735948987:AAFfSAMxlbYuz2zvgNgeJG2CogIzNTA18lk")
 EXCEL_FILE = "oquvchilar.xlsx"
 RESULT_FILE = "natija_oquvchilar.xlsx"
 
-# 5tashabbus.uz API manzillari va sarlavhalari (Headers)
 BASE_URL = "https://5tashabbus.uz"
 CHECK_STUDENT_API = f"{BASE_URL}/api/v1/student/check"
 
+# Server 403 bermasligi uchun to'liq brauzer header'lari
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "uz,ru;q=0.9,en;q=0.8",
     "Content-Type": "application/json",
     "Origin": BASE_URL,
-    "Referer": f"{BASE_URL}/"
+    "Referer": f"{BASE_URL}/",
+    "Sec-Ch-Ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-origin"
 }
 
 logging.basicConfig(level=logging.INFO)
@@ -30,7 +37,7 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 
-# 2. TEZKOR API ORQALI RO'YXATDAN O'TKAZISH FUNKSIYASI (0.3 Soniya)
+# 2. SEANS VA COOKIE BILAN ISHLAYDIGAN API FUNKSIYASI
 def register_student_via_api(guvohnoma: str, birth_date: str, phone: str = "998995498988") -> dict:
     guvohnoma = guvohnoma.strip()
     if " " in guvohnoma:
@@ -41,20 +48,22 @@ def register_student_via_api(guvohnoma: str, birth_date: str, phone: str = "9989
     session = requests.Session()
     session.headers.update(HEADERS)
 
-    payload = {
-        "series": seriya.upper(),
-        "number": raqam.strip(),
-        "birth_date": birth_date.strip(),
-        "phone": phone.strip()
-    }
-
     try:
+        # 1. Bosh sahifaga kirib Cookie va Session'ni faollashtirish (403 xatoligining oldini oladi)
+        session.get(BASE_URL, timeout=10)
+
+        payload = {
+            "series": seriya.upper(),
+            "number": raqam.strip(),
+            "birth_date": birth_date.strip(),
+            "phone": phone.strip()
+        }
+
+        # 2. API'ga so'rov yuborish
         response = session.post(CHECK_STUDENT_API, json=payload, timeout=10)
         
         if response.status_code == 200:
             res_data = response.json()
-            
-            # Agar o'quvchi topilgan bo'lsa
             student_name = res_data.get("full_name") or res_data.get("student_name") or res_data.get("name")
             
             if student_name:
@@ -92,7 +101,7 @@ async def handle_document(message: types.Message):
         await message.answer(
             f"✅ **Excel fayl qabul qilindi!**\n\n"
             f"📊 Jami o'quvchilar soni: **{len(df)} ta**\n\n"
-            f"Tezkor API orqali ro'yxatdan o'tkazishni boshlash uchun `/start_registration` buyrug'ini yuboring."
+            f"Ro'yxatdan o'tkazishni boshlash uchun `/start_registration` buyrug'ini yuboring."
         )
 
 
@@ -112,13 +121,11 @@ async def start_mass_registration(message: types.Message):
     statuses = []
     details = []
 
-    # Har bir o'quvchini ketma-ket chaqmoqday tezlikda API orqali o'tkazish
     for idx, row in df.iterrows():
         guvohnoma = str(row["Guvohnoma_Raqam"]).strip()
         bdate = str(row["Tugilgan_Sana"]).strip()
         phone = str(row.get("Telefon", "998995498988")).replace("+", "").strip()
 
-        # API so'rovi (0.3 soniya)
         res = register_student_via_api(guvohnoma, bdate, phone)
 
         if res["success"]:
@@ -131,21 +138,18 @@ async def start_mass_registration(message: types.Message):
             statuses.append("Xatolik")
             details.append(res['msg'])
 
-        # Har 3 ta o'quvchida holatni yangilab turish
         if (idx + 1) % 3 == 0 or (idx + 1) == total:
             await status_msg.edit_text(
                 f"⚡️ **Jarayon:** [{idx+1}/{total}]\n"
                 f"✅ Muvaffaqiyatli: {len(successful_students)} ta\n"
                 f"❌ Xatolik: {len(failed_students)} ta"
             )
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.3)
 
-    # Natijalarni yangi Excel fayliga saqlash
     df["Natija_Holati"] = statuses
     df["Tafsilot_Ism"] = details
     df.to_excel(RESULT_FILE, index=False)
 
-    # YAKUNIY HISOBOT
     report = f"🎉 **Barcha ishlar yakunlandi!**\n\n"
     report += f"📊 Jami: **{total} ta**\n"
     report += f"✅ Muvaffaqiyatli: **{len(successful_students)} ta**\n"
@@ -161,7 +165,6 @@ async def start_mass_registration(message: types.Message):
 
     await message.answer(report)
     
-    # Natija Excel faylini Telegram'ga yuklash
     await message.answer_document(
         document=FSInputFile(RESULT_FILE),
         caption="📊 **To'liq ro'yxatdan o'tkazish natijalari (Excel)**"
@@ -174,4 +177,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
